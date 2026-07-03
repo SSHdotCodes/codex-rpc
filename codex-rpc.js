@@ -70,6 +70,9 @@ const DEFAULTS = {
   // assets to static PNGs; presence only animates via external image URLs
   // (same trick claude-rpc uses). Set to '' to fall back to uploaded assets.
   assetBase: 'https://raw.githubusercontent.com/SSHdotCodes/codex-rpc/main/assets',
+  // Discord's media proxy caches external URLs forever — bump this whenever
+  // the GIFs change so clients fetch the new frames.
+  assetVersion: 2,
 };
 
 const CONFIG_PATH = path.join(os.homedir(), '.codex-rpc.json');
@@ -207,8 +210,8 @@ function listDirs(p) {
   catch { return []; }
 }
 
-function newestRollout(sessionsRoot) {
-  let best = null;
+function topRollouts(sessionsRoot, k) {
+  const all = [];
   for (const y of listDirs(sessionsRoot)) {
     for (const m of listDirs(path.join(sessionsRoot, y))) {
       for (const d of listDirs(path.join(sessionsRoot, y, m))) {
@@ -220,12 +223,17 @@ function newestRollout(sessionsRoot) {
           const fp = path.join(dir, f);
           let st;
           try { st = fs.statSync(fp); } catch { continue; }
-          if (!best || st.mtimeMs > best.mtimeMs) best = { path: fp, mtimeMs: st.mtimeMs };
+          all.push({ path: fp, mtimeMs: st.mtimeMs });
         }
       }
     }
   }
-  return best;
+  all.sort((a, b) => b.mtimeMs - a.mtimeMs);
+  return all.slice(0, k);
+}
+
+function newestRollout(sessionsRoot) {
+  return topRollouts(sessionsRoot, 1)[0] || null;
 }
 
 /** Last cumulative token total recorded in a rollout file (reads the tail). */
@@ -285,44 +293,23 @@ function fmtTokens(n) {
   return String(n);
 }
 
-class SessionWatcher {
-  constructor(cfg, onEvent) {
-    this.cfg = cfg;
-    this.onEvent = onEvent;   // ({state, kind, keepAlive}, meta) per classified line
-    this.root = path.join(cfg.codexHome, 'sessions');
-    this.file = null;
-    this.offset = 0;
+/** Follows one rollout file: seeded from its tail, then appended lines. */
+class Tailer {
+  constructor(file, onLine) {
+    this.file = file;
+    this.onLine = onLine;
     this.partial = '';
-    this.meta = {};           // {cwd, startedAt}
+    this.meta = {};           // {cwd, startedAt, sessionTokens, limitPct}
     this.callStates = new Map();
-  }
-
-  start() {
-    this.pickFile(true);
-    this.pollTimer = setInterval(() => this.poll(), 900);
-    this.scanTimer = setInterval(() => this.pickFile(false), 5000);
-  }
-  stop() { clearInterval(this.pollTimer); clearInterval(this.scanTimer); }
-
-  pickFile(initial) {
-    const best = newestRollout(this.root);
-    if (!best || (this.file && best.path === this.file)) return;
-    this.file = best.path;
-    this.partial = '';
-    this.meta = {};
-    const size = fs.statSync(this.file).size;
-    // Seed state from the tail of the file, then follow appended lines.
-    const seedFrom = Math.max(0, size - 256 * 1024);
-    this.offset = seedFrom;
+    let size = 0;
+    try { size = fs.statSync(file).size; } catch { /* gone already */ }
+    this.offset = Math.max(0, size - 256 * 1024);
     this.readAppended(true);
-    this.offset = size;
-    if (!initial) log(`session → ${path.basename(this.file)}`);
   }
 
   poll() {
-    if (!this.file) { this.pickFile(false); return; }
     let st;
-    try { st = fs.statSync(this.file); } catch { this.file = null; return; }
+    try { st = fs.statSync(this.file); } catch { return; }
     if (st.size > this.offset) this.readAppended(false);
   }
 
@@ -360,7 +347,51 @@ class SessionWatcher {
     }
     const ts = Date.parse(j.timestamp) || Date.now();
     const res = classifyLine(j, this.callStates);
-    this.onEvent(res, { ts, seeding, meta: this.meta });
+    this.onLine(res, { ts, seeding, meta: this.meta, file: this.file });
+  }
+}
+
+/**
+ * Tails the K most recently modified rollout files at once. Codex Desktop
+ * keeps several threads alive simultaneously; following just the newest file
+ * flaps between them. With every live session feeding one Presence machine,
+ * the latest event across all of them wins.
+ */
+class SessionWatcher {
+  constructor(cfg, onEvent, maxTails = 4) {
+    this.cfg = cfg;
+    this.onEvent = onEvent;   // ({state, kind, keepAlive}, {ts, meta, file})
+    this.root = path.join(cfg.codexHome, 'sessions');
+    this.maxTails = maxTails;
+    this.tails = new Map();   // file -> Tailer
+  }
+
+  start() {
+    this.rescan(true);
+    this.pollTimer = setInterval(() => { for (const t of this.tails.values()) t.poll(); }, 900);
+    this.scanTimer = setInterval(() => this.rescan(false), 5000);
+  }
+  stop() { clearInterval(this.pollTimer); clearInterval(this.scanTimer); }
+
+  rescan(initial) {
+    const top = topRollouts(this.root, this.maxTails);
+    const keep = new Set(top.map(f => f.path));
+    for (const file of this.tails.keys()) {
+      if (!keep.has(file)) this.tails.delete(file);
+    }
+    for (const f of top) {
+      if (!this.tails.has(f.path)) {
+        this.tails.set(f.path, new Tailer(f.path, this.onEvent));
+        if (!initial) log(`session → ${path.basename(f.path)}`);
+      }
+    }
+  }
+
+  tailedFiles() { return [...this.tails.keys()]; }
+  liveTokens() {
+    let sum = 0;
+    for (const t of this.tails.values()) sum += t.meta.sessionTokens || 0;
+    return sum;
   }
 }
 
@@ -376,16 +407,20 @@ class Presence {
     this.meta = {};
   }
   onEvent({ state, kind, keepAlive }, { ts, meta }) {
-    if (meta) this.meta = meta;
-    if (state) {
+    // Events from several tailed sessions interleave (and seeding replays
+    // history), so only newer-or-equal events may move the state.
+    if (state && ts >= (this.lastStateTs || 0)) {
       this.lastState = state;
+      this.lastStateTs = ts;
       this.lastActivityTs = Math.max(this.lastActivityTs, ts);
+      if (meta) this.meta = meta;   // display follows the session doing the work
       if (state === 'success') this.successTs = ts;
       if (state === 'error') this.errorTs = ts;
-    } else if (keepAlive) {
+      if (kind) this.lastKind = kind;
+    } else if (state || keepAlive) {
       this.lastActivityTs = Math.max(this.lastActivityTs, ts);
+      if (kind && ts >= (this.lastStateTs || 0)) this.lastKind = kind;
     }
-    if (kind) this.lastKind = kind;
   }
   current(now = Date.now()) {
     const age = (now - this.lastActivityTs) / 1000;
@@ -529,7 +564,7 @@ function activityFor(cfg, state, meta, startedAt, totalTokens) {
   const project = meta && meta.cwd ? path.basename(meta.cwd) : null;
   const img = STATE_IMAGE[state] || state;
   const large = cfg.assets[state] ||
-    (cfg.assetBase ? `${cfg.assetBase}/${img}.gif` : img);
+    (cfg.assetBase ? `${cfg.assetBase}/${img}.gif?v=${cfg.assetVersion}` : img);
   let stateText = s.text;
   if (cfg.showTokens && totalTokens > 0) stateText += ` · ${fmtTokens(totalTokens)} tokens`;
   let hover = project ? `${s.blurb} • ${project}` : s.blurb;
@@ -548,7 +583,7 @@ function activityFor(cfg, state, meta, startedAt, totalTokens) {
   if (cfg.smallImage) {
     act.assets.small_image = /^https?:/.test(cfg.smallImage) || !cfg.assetBase
       ? cfg.smallImage
-      : `${cfg.assetBase}/${cfg.smallImage}.png`;
+      : `${cfg.assetBase}/${cfg.smallImage}.png?v=${cfg.assetVersion}`;
     act.assets.small_text = 'Codex CLI';
   }
   if (startedAt) act.timestamps = { start: Math.floor(startedAt / 1000) * 1000 };
@@ -580,19 +615,24 @@ function runStart(cfg, dry) {
   const watcher = new SessionWatcher(cfg, (res, m) => presence.onEvent(res, m));
   watcher.start();
 
-  // Lifetime token usage: baseline scan of every past session, plus the live
-  // count from the session being tailed (rebased whenever the file changes).
+  // Lifetime token usage: baseline scan of every past session, plus live
+  // counts from the tailed sessions (rebased whenever the tailed set changes).
   let tokens = scanAllTokens(sessionsRoot);
-  let scannedFor = watcher.file;
+  let scannedKey = watcher.tailedFiles().sort().join('|');
   log(`lifetime tokens across ${tokens.perFile.size} sessions: ${fmtTokens(tokens.sum)}`);
   const totalTokens = () => {
-    if (watcher.file !== scannedFor) {           // new session appeared
+    const key = watcher.tailedFiles().sort().join('|');
+    if (key !== scannedKey) {                    // sessions appeared/rotated
       tokens = scanAllTokens(sessionsRoot);
-      scannedFor = watcher.file;
+      scannedKey = key;
     }
-    const baselineCur = tokens.perFile.get(watcher.file) || 0;
-    const liveCur = watcher.meta.sessionTokens ?? baselineCur;
-    return tokens.sum - baselineCur + liveCur;
+    let total = tokens.sum;
+    for (const f of watcher.tailedFiles()) {
+      const baseline = tokens.perFile.get(f) || 0;
+      const live = watcher.tails.get(f).meta.sessionTokens ?? baseline;
+      total += live - baseline;
+    }
+    return total;
   };
 
   let rpc = null;
@@ -620,12 +660,12 @@ function runStart(cfg, dry) {
       return;
     }
     if (hidden) { hidden = false; log('codex is back — showing presence'); }
-    const startedAt = watcher.meta.startedAt || startedShownAt;
-    const act = activityFor(cfg, state, watcher.meta, startedAt, totalTokens());
+    const startedAt = presence.meta.startedAt || startedShownAt;
+    const act = activityFor(cfg, state, presence.meta, startedAt, totalTokens());
     const key = JSON.stringify(act);
     if (key !== lastSent) {
       lastSent = key;
-      log(`state → ${state}  ${act.state}${watcher.meta.cwd ? '  (' + path.basename(watcher.meta.cwd) + ')' : ''}`);
+      log(`state → ${state}  ${act.state}${presence.meta.cwd ? '  (' + path.basename(presence.meta.cwd) + ')' : ''}`);
       if (rpc) rpc.setActivity(act);
     }
   };
@@ -680,13 +720,14 @@ function runStatus(cfg, argv) {
   const follow = argv.includes('--follow');
   const presence = new Presence(cfg);
   const watcher = new SessionWatcher(cfg, (res, m) => presence.onEvent(res, m));
-  watcher.pickFile(true);
+  watcher.rescan(true);
   const report = () => {
     const state = presence.current();
+    const files = watcher.tailedFiles();
     console.log(`${state}  ${STATES[state].text}` +
-      (watcher.meta.cwd ? `  project=${path.basename(watcher.meta.cwd)}` : '') +
-      (watcher.meta.sessionTokens ? `  session-tokens=${fmtTokens(watcher.meta.sessionTokens)}` : '') +
-      (watcher.file ? `  session=${path.basename(watcher.file)}` : '  (no sessions found)'));
+      (presence.meta.cwd ? `  project=${path.basename(presence.meta.cwd)}` : '') +
+      `  live-session-tokens=${fmtTokens(watcher.liveTokens())}` +
+      (files.length ? `  tailing=${files.map(f => path.basename(f)).join(', ')}` : '  (no sessions found)'));
   };
   if (!follow) { report(); process.exit(0); }
   watcher.start();
