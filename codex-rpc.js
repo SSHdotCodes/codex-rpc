@@ -18,6 +18,7 @@
 
 'use strict';
 
+const { execFile } = require('child_process');
 const fs = require('fs');
 const net = require('net');
 const os = require('os');
@@ -37,6 +38,15 @@ const STATES = {
   deploying: { text: '🚀 Shipping it',      blurb: 'Codex is shipping' },
 };
 
+// The three hero animations (thinking / typing / sleeping) cover all states.
+// Override per-state via the `assets` config map.
+const STATE_IMAGE = {
+  thinking: 'thinking', searching: 'thinking', reading: 'thinking', success: 'thinking',
+  coding: 'coding', building: 'coding', debugging: 'coding', deploying: 'coding',
+  error: 'coding',
+  sleeping: 'sleeping',
+};
+
 // Default shared "Gaming on Codex" Discord application (public identifier,
 // not a secret — same model as claude-rpc). Override with --client-id,
 // CODEX_RPC_CLIENT_ID, or ~/.codex-rpc.json.
@@ -51,6 +61,8 @@ const DEFAULTS = {
   updateEverySec: 5,      // min seconds between presence pushes
   assets: {},             // per-state override: asset key or https URL
   smallImage: 'codex',    // set to '' to disable
+  showTokens: true,       // append lifetime Codex token usage to the state line
+  clearWhenQuit: true,    // hide presence entirely when Codex isn't running
   // Where the animated GIFs are hosted. Discord flattens *uploaded* art
   // assets to static PNGs; presence only animates via external image URLs
   // (same trick claude-rpc uses). Set to '' to fall back to uploaded assets.
@@ -206,6 +218,63 @@ function newestRollout(sessionsRoot) {
   return best;
 }
 
+/** Last cumulative token total recorded in a rollout file (reads the tail). */
+function lastSessionTokens(fp) {
+  try {
+    const st = fs.statSync(fp);
+    const len = Math.min(st.size, 64 * 1024);
+    if (!len) return 0;
+    const buf = Buffer.alloc(len);
+    const fd = fs.openSync(fp, 'r');
+    fs.readSync(fd, buf, 0, len, st.size - len);
+    fs.closeSync(fd);
+    const text = buf.toString('utf8');
+    let idx = text.lastIndexOf('"token_count"');
+    while (idx !== -1) {
+      const lineStart = text.lastIndexOf('\n', idx) + 1;
+      const lineEnd = text.indexOf('\n', idx);
+      try {
+        const j = JSON.parse(text.slice(lineStart, lineEnd === -1 ? undefined : lineEnd));
+        const tot = j.payload?.info?.total_token_usage?.total_tokens;
+        if (typeof tot === 'number') return tot;
+      } catch { /* partial line, keep looking */ }
+      idx = idx > 0 ? text.lastIndexOf('"token_count"', idx - 1) : -1;
+    }
+  } catch { /* unreadable */ }
+  return 0;
+}
+
+/** Sum lifetime token usage across every rollout file. */
+function scanAllTokens(sessionsRoot) {
+  const perFile = new Map();
+  let sum = 0;
+  for (const y of listDirs(sessionsRoot)) {
+    for (const m of listDirs(path.join(sessionsRoot, y))) {
+      for (const d of listDirs(path.join(sessionsRoot, y, m))) {
+        const dir = path.join(sessionsRoot, y, m, d);
+        let files;
+        try { files = fs.readdirSync(dir); } catch { continue; }
+        for (const f of files) {
+          if (!f.startsWith('rollout-') || !f.endsWith('.jsonl')) continue;
+          const fp = path.join(dir, f);
+          const n = lastSessionTokens(fp);
+          perFile.set(fp, n);
+          sum += n;
+        }
+      }
+    }
+  }
+  return { sum, perFile };
+}
+
+function fmtTokens(n) {
+  const unit = (v, s) => (v < 10 ? v.toFixed(1).replace(/\.0$/, '') : String(Math.round(v))) + s;
+  if (n >= 1e9) return unit(n / 1e9, 'B');
+  if (n >= 1e6) return unit(n / 1e6, 'M');
+  if (n >= 1e3) return unit(n / 1e3, 'k');
+  return String(n);
+}
+
 class SessionWatcher {
   constructor(cfg, onEvent) {
     this.cfg = cfg;
@@ -273,6 +342,12 @@ class SessionWatcher {
       this.meta.startedAt = Date.parse(j.payload.timestamp || j.timestamp) || Date.now();
     }
     if (j.type === 'turn_context' && j.payload && j.payload.cwd) this.meta.cwd = j.payload.cwd;
+    if (j.type === 'event_msg' && j.payload && j.payload.type === 'token_count') {
+      const tot = j.payload.info?.total_token_usage?.total_tokens;
+      if (typeof tot === 'number') this.meta.sessionTokens = tot;
+      const pct = j.payload.rate_limits?.primary?.used_percent;
+      if (typeof pct === 'number') this.meta.limitPct = pct;
+    }
     const ts = Date.parse(j.timestamp) || Date.now();
     const res = classifyLine(j, this.callStates);
     this.onEvent(res, { ts, seeding, meta: this.meta });
@@ -430,6 +505,7 @@ class DiscordRPC {
   }
 
   clearActivity() {
+    this.pending = null;
     if (!this.ready) return;
     this.send(1, { cmd: 'SET_ACTIVITY', args: { pid: process.pid }, nonce: String(Date.now()) });
   }
@@ -438,18 +514,25 @@ class DiscordRPC {
 // ---------------------------------------------------------------- glue
 function log(...a) { console.log(new Date().toTimeString().slice(0, 8), ...a); }
 
-function activityFor(cfg, state, meta, startedAt) {
+function activityFor(cfg, state, meta, startedAt, totalTokens) {
   const s = STATES[state];
   const project = meta && meta.cwd ? path.basename(meta.cwd) : null;
+  const img = STATE_IMAGE[state] || state;
   const large = cfg.assets[state] ||
-    (cfg.assetBase ? `${cfg.assetBase}/${state}.gif` : state);
+    (cfg.assetBase ? `${cfg.assetBase}/${img}.gif` : img);
+  let stateText = s.text;
+  if (cfg.showTokens && totalTokens > 0) stateText += ` · ${fmtTokens(totalTokens)} tokens`;
+  let hover = project ? `${s.blurb} • ${project}` : s.blurb;
+  if (meta && typeof meta.limitPct === 'number') {
+    hover += ` • ${Math.round(meta.limitPct)}% of 5h limit used`;
+  }
   const act = {
     type: 0,
     details: cfg.details,
-    state: s.text,
+    state: stateText,
     assets: {
       large_image: large,
-      large_text: project ? `${s.blurb} • ${project}` : s.blurb,
+      large_text: hover,
     },
   };
   if (cfg.smallImage) {
@@ -462,15 +545,45 @@ function activityFor(cfg, state, meta, startedAt) {
   return act;
 }
 
+/** True if the Codex CLI or desktop app is running (matched by basename so
+ *  paths that merely contain "Codex" — like project folders — don't count). */
+function checkCodexRunning(cb) {
+  execFile('ps', ['-Axo', 'comm='], { maxBuffer: 4 * 1024 * 1024 }, (err, out) => {
+    if (err) return cb(true); // fail open: never hide presence on a ps hiccup
+    cb(out.split('\n').some((l) => {
+      const c = l.trim();
+      const base = c.split('/').pop();
+      if (base === 'codex') return true;                       // CLI binary
+      return base === 'Codex' && c.includes('Codex.app');      // desktop app
+    }));
+  });
+}
+
 function runStart(cfg, dry) {
   if (!cfg.clientId && !dry) {
     console.error('No Discord client id set. Run:  codex-rpc setup --client-id <your app id>');
     console.error('(create an app at https://discord.com/developers/applications — see README)');
     process.exit(1);
   }
+  const sessionsRoot = path.join(cfg.codexHome, 'sessions');
   const presence = new Presence(cfg);
   const watcher = new SessionWatcher(cfg, (res, m) => presence.onEvent(res, m));
   watcher.start();
+
+  // Lifetime token usage: baseline scan of every past session, plus the live
+  // count from the session being tailed (rebased whenever the file changes).
+  let tokens = scanAllTokens(sessionsRoot);
+  let scannedFor = watcher.file;
+  log(`lifetime tokens across ${tokens.perFile.size} sessions: ${fmtTokens(tokens.sum)}`);
+  const totalTokens = () => {
+    if (watcher.file !== scannedFor) {           // new session appeared
+      tokens = scanAllTokens(sessionsRoot);
+      scannedFor = watcher.file;
+    }
+    const baselineCur = tokens.perFile.get(watcher.file) || 0;
+    const liveCur = watcher.meta.sessionTokens ?? baselineCur;
+    return tokens.sum - baselineCur + liveCur;
+  };
 
   let rpc = null;
   if (!dry) {
@@ -478,16 +591,31 @@ function runStart(cfg, dry) {
     rpc.connect();
   }
 
+  let codexRunning = true;
+  checkCodexRunning((r) => { codexRunning = r; });
+  setInterval(() => checkCodexRunning((r) => { codexRunning = r; }), 30000);
+
   let lastSent = '';
+  let hidden = false;
   let startedShownAt = Date.now();
   const tick = () => {
     const state = presence.current();
+    if (cfg.clearWhenQuit && !codexRunning && state === 'sleeping') {
+      if (!hidden) {
+        hidden = true;
+        lastSent = '';
+        log('codex is not running — hiding presence');
+        if (rpc) rpc.clearActivity();
+      }
+      return;
+    }
+    if (hidden) { hidden = false; log('codex is back — showing presence'); }
     const startedAt = watcher.meta.startedAt || startedShownAt;
-    const act = activityFor(cfg, state, watcher.meta, startedAt);
+    const act = activityFor(cfg, state, watcher.meta, startedAt, totalTokens());
     const key = JSON.stringify(act);
     if (key !== lastSent) {
       lastSent = key;
-      log(`state → ${state}  ${STATES[state].text}${watcher.meta.cwd ? '  (' + path.basename(watcher.meta.cwd) + ')' : ''}`);
+      log(`state → ${state}  ${act.state}${watcher.meta.cwd ? '  (' + path.basename(watcher.meta.cwd) + ')' : ''}`);
       if (rpc) rpc.setActivity(act);
     }
   };
@@ -498,7 +626,7 @@ function runStart(cfg, dry) {
     if (rpc) rpc.clearActivity();
     setTimeout(() => process.exit(0), 300);
   });
-  log(`watching ${path.join(cfg.codexHome, 'sessions')}${dry ? '  (dry run, no Discord)' : ''}`);
+  log(`watching ${sessionsRoot}${dry ? '  (dry run, no Discord)' : ''}`);
 }
 
 function runDemo(cfg, argv) {
@@ -518,7 +646,10 @@ function runDemo(cfg, argv) {
     const state = order[i % order.length];
     i++;
     log(`demo → ${state}  ${STATES[state].text}`);
-    if (rpc) rpc.setActivity(activityFor(cfg, state, { cwd: 'demo-project' }, started));
+    if (rpc) {
+      rpc.setActivity(activityFor(cfg, state, { cwd: 'demo-project', limitPct: 25 },
+        started, 1234567 + i * 98765));
+    }
   };
   show();
   setInterval(show, period * 1000);
@@ -544,6 +675,7 @@ function runStatus(cfg, argv) {
     const state = presence.current();
     console.log(`${state}  ${STATES[state].text}` +
       (watcher.meta.cwd ? `  project=${path.basename(watcher.meta.cwd)}` : '') +
+      (watcher.meta.sessionTokens ? `  session-tokens=${fmtTokens(watcher.meta.sessionTokens)}` : '') +
       (watcher.file ? `  session=${path.basename(watcher.file)}` : '  (no sessions found)'));
   };
   if (!follow) { report(); process.exit(0); }

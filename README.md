@@ -11,18 +11,26 @@ both the CLI and the desktop app.
 
 ## States
 
-| state | shown as | triggered by |
-|---|---|---|
-| `thinking` | 🧠 Thinking… | reasoning events, new prompts, task start, planning |
-| `coding` | ⌨️ Writing code | `apply_patch` file edits |
-| `reading` | 📖 Reading files | `cat`, `head`, `tail`, `sed -n`, … |
-| `searching` | 🔍 Searching | `rg`/`grep`/`find`, web search, browsing tools |
-| `building` | ⚙️ Running commands | builds, installs, generic shell commands |
-| `debugging` | 🐛 Debugging | test runners, commands exiting non-zero |
-| `success` | ✅ Task complete! | `task_complete` (lingers ~3 min) |
-| `error` | ⚠️ Hit a snag | failed patches, stream errors, aborted turns |
-| `sleeping` | 😴 Idle | no activity for 5 min |
-| `deploying` | 🚀 Shipping it | `git push`, `rsync`/`scp`, publish/deploy commands |
+| state | shown as | animation | triggered by |
+|---|---|---|---|
+| `thinking` | 🧠 Thinking… | thinking | reasoning events, new prompts, task start, planning |
+| `coding` | ⌨️ Writing code | typing | `apply_patch` file edits |
+| `reading` | 📖 Reading files | thinking | `cat`, `head`, `tail`, `sed -n`, … |
+| `searching` | 🔍 Searching | thinking | `rg`/`grep`/`find`, web search, browsing tools |
+| `building` | ⚙️ Working… | typing | builds, installs, running commands (held while a command runs) |
+| `debugging` | 🐛 Debugging | typing | failing test runners / real command errors |
+| `success` | ✅ Task complete! | thinking | `task_complete` (lingers ~3 min) |
+| `error` | ⚠️ Hit a snag | typing | failed patches, stream errors, aborted turns |
+| `sleeping` | 😴 Idle | sleeping | no activity for 5 min |
+| `deploying` | 🚀 Shipping it | typing | `git push`, `rsync`/`scp`, publish/deploy commands |
+
+The three hero animations (`assets/thinking.gif`, `assets/coding.gif`,
+`assets/sleeping.gif`) are seamless ~19s loops, so a long build or think just
+keeps looping cleanly. The state line also shows your **lifetime Codex token
+usage** (summed across every session in `~/.codex/sessions`, updated live),
+and hovering the art shows your 5-hour rate-limit usage. When Codex isn't
+running at all, the presence hides entirely — reappearing the moment you're
+back (`clearWhenQuit: false` to disable, `showTokens: false` to hide tokens).
 
 ## Setup
 
