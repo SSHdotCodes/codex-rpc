@@ -13,24 +13,25 @@ both the CLI and the desktop app.
 
 | state | shown as | animation | triggered by |
 |---|---|---|---|
-| `thinking` | 🧠 Thinking… | thinking | reasoning events, new prompts, task start, planning |
+| `thinking` | 🧠 Thinking… | thinking | reasoning, new prompts, task start, chewing on command results |
 | `coding` | ⌨️ Writing code | typing | `apply_patch` file edits |
-| `reading` | 📖 Reading files | thinking | `cat`, `head`, `tail`, `sed -n`, … |
-| `searching` | 🔍 Searching | thinking | `rg`/`grep`/`find`, web search, browsing tools |
+| `reading` | 📖 Reading files | typing | `cat`, `head`, `tail`, `sed -n`, … |
+| `searching` | 🔍 Searching | typing | `rg`/`grep`/`find`, web search, browsing tools |
 | `building` | ⚙️ Working… | typing | builds, installs, running commands (held while a command runs) |
 | `debugging` | 🐛 Debugging | typing | failing test runners / real command errors |
-| `success` | ✅ Task complete! | thinking | `task_complete` (lingers ~3 min) |
+| `success` | ✅ Task complete! | sleeping | `task_complete` (lingers ~3 min, then sleeps) |
 | `error` | ⚠️ Hit a snag | typing | failed patches, stream errors, aborted turns |
-| `sleeping` | 😴 Idle | sleeping | no activity for 5 min |
+| `sleeping` | 😴 Sleeping | sleeping | no activity for 5 min, or Codex not running |
 | `deploying` | 🚀 Shipping it | typing | `git push`, `rsync`/`scp`, publish/deploy commands |
 
-The three hero animations (`assets/thinking.gif`, `assets/coding.gif`,
-`assets/sleeping.gif`) are seamless ~19s loops, so a long build or think just
-keeps looping cleanly. The state line also shows your **lifetime Codex token
-usage** (summed across every session in `~/.codex/sessions`, updated live),
-and hovering the art shows your 5-hour rate-limit usage. When Codex isn't
-running at all, the presence hides entirely — reappearing the moment you're
-back (`clearWhenQuit: false` to disable, `showTokens: false` to hide tokens).
+Three seamless ~19s loops cover everything — **thinking** while Codex
+reasons, **typing** while it edits files and runs commands, **sleeping** when
+it's idle or not running — so a long build or think just keeps looping
+cleanly. The state line also shows your **lifetime Codex token usage**
+(summed across every session in `~/.codex/sessions`, updated live), and
+hovering the art shows your 5-hour rate-limit usage. Set
+`clearWhenQuit: true` to hide the presence entirely when Codex is closed
+instead of showing 😴, and `showTokens: false` to hide the token counter.
 
 ## Setup
 

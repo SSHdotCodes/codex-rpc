@@ -34,17 +34,19 @@ const STATES = {
   debugging: { text: '🐛 Debugging',        blurb: 'Codex is squashing bugs' },
   success:   { text: '✅ Task complete!',   blurb: 'Codex finished the task' },
   error:     { text: '⚠️ Hit a snag',       blurb: 'Codex hit an error' },
-  sleeping:  { text: '😴 Idle',             blurb: 'Codex is napping' },
+  sleeping:  { text: '😴 Sleeping',         blurb: 'Codex is napping' },
   deploying: { text: '🚀 Shipping it',      blurb: 'Codex is shipping' },
 };
 
-// The three hero animations (thinking / typing / sleeping) cover all states.
+// The three hero animations cover all states:
+//   thinking = reasoning/thinking · coding = editing files/working ·
+//   sleeping = idle / Codex not running (and post-task rest)
 // Override per-state via the `assets` config map.
 const STATE_IMAGE = {
-  thinking: 'thinking', searching: 'thinking', reading: 'thinking', success: 'thinking',
-  coding: 'coding', building: 'coding', debugging: 'coding', deploying: 'coding',
-  error: 'coding',
-  sleeping: 'sleeping',
+  thinking: 'thinking',
+  coding: 'coding', reading: 'coding', searching: 'coding', building: 'coding',
+  debugging: 'coding', deploying: 'coding', error: 'coding',
+  sleeping: 'sleeping', success: 'sleeping',
 };
 
 // Default shared "Gaming on Codex" Discord application (public identifier,
@@ -62,7 +64,8 @@ const DEFAULTS = {
   assets: {},             // per-state override: asset key or https URL
   smallImage: 'codex',    // set to '' to disable
   showTokens: true,       // append lifetime Codex token usage to the state line
-  clearWhenQuit: true,    // hide presence entirely when Codex isn't running
+  clearWhenQuit: false,   // true = hide presence when Codex isn't running
+                          // (default shows 😴 Sleeping instead)
   // Where the animated GIFs are hosted. Discord flattens *uploaded* art
   // assets to static PNGs; presence only animates via external image URLs
   // (same trick claude-rpc uses). Set to '' to fall back to uploaded assets.
@@ -138,6 +141,9 @@ function classifyLine(json, callStates) {
   if (t === 'response_item') {
     if (pt === 'reasoning') return { state: 'thinking' };
     if (pt === 'web_search_call') return { state: 'searching', kind: 'call' };
+    if (pt === 'tool_search_call') return { state: 'searching', kind: 'call' };
+    if (pt === 'tool_search_output') return { state: null, kind: 'result', keepAlive: true };
+    if (pt === 'image_generation_call') return { state: 'building', kind: 'call' };
     if (pt === 'function_call' || pt === 'custom_tool_call') {
       const name = p.name || '';
       if (name === 'write_stdin') return { state: null, keepAlive: true };
@@ -184,7 +190,11 @@ function classifyLine(json, callStates) {
         : { state: 'coding', kind: 'result' };
     }
     if (pt === 'error' || pt === 'stream_error' || pt === 'turn_aborted') return { state: 'error' };
-    if (pt === 'agent_message' || pt === 'token_count' || pt === 'agent_reasoning') {
+    if (pt === 'mcp_tool_call_begin') return { state: 'building', kind: 'call' };
+    if (pt === 'mcp_tool_call_end') return { state: null, kind: 'result', keepAlive: true };
+    if (pt === 'image_generation_end') return { state: null, kind: 'result', keepAlive: true };
+    if (pt === 'agent_message' || pt === 'token_count' || pt === 'agent_reasoning' ||
+        pt === 'context_compacted' || pt === 'thread_rolled_back') {
       return { state: null, keepAlive: true };
     }
   }
