@@ -728,7 +728,13 @@ function runDaemonStart() {
     fs.mkdirSync(path.dirname(agentPlistPath()), { recursive: true });
     fs.writeFileSync(agentPlistPath(), plist);
     launchctl(['bootout', `gui/${uid}/${AGENT_LABEL}`]);   // restart if already loaded
-    if (!launchctl(['bootstrap', `gui/${uid}`, agentPlistPath()])) {
+    // bootout is async; retry bootstrap while the old instance drains
+    let ok = false;
+    for (let i = 0; i < 10 && !ok; i++) {
+      ok = launchctl(['bootstrap', `gui/${uid}`, agentPlistPath()]);
+      if (!ok) require('child_process').execSync('sleep 0.5');
+    }
+    if (!ok) {
       console.error('failed to start the launchd agent — try: codex-rpc run   (foreground)');
       process.exit(1);
     }
