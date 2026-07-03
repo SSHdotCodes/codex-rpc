@@ -2,9 +2,28 @@
   "name": "codex-rpc",
   "version": "1.0.0",
   "description": "Discord Rich Presence for the OpenAI Codex CLI — Gaming on Codex, with cute per-state animations",
-  "bin": {
-    "codex-rpc": "./codex-rpc.js"
+  "homepage": "https://codex-rpc.ssh.codes",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/SSHdotCodes/codex-rpc.git"
   },
+  "bugs": {
+    "url": "https://github.com/SSHdotCodes/codex-rpc/issues"
+  },
+  "keywords": [
+    "codex",
+    "discord",
+    "rich-presence",
+    "rpc",
+    "cli"
+  ],
+  "bin": {
+    "codex-rpc": "codex-rpc.js"
+  },
+  "files": [
+    "codex-rpc.js",
+    "install.sh"
+  ],
   "engines": {
     "node": ">=18"
   },

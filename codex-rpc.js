@@ -696,9 +696,20 @@ function runStart(cfg, dry) {
 // ---------------------------------------------------------------- daemon
 const AGENT_LABEL = 'codes.ssh.codex-rpc';
 const LOG_PATH = path.join(os.homedir(), '.codex-rpc.log');
+const INSTALL_DIR = path.join(os.homedir(), '.codex-rpc');
+const INSTALLED_SCRIPT = path.join(INSTALL_DIR, 'codex-rpc.js');
 
 function agentPlistPath() {
   return path.join(os.homedir(), 'Library', 'LaunchAgents', `${AGENT_LABEL}.plist`);
+}
+
+function stableScriptPath() {
+  const self = fs.realpathSync(__filename);
+  if (path.resolve(self) === path.resolve(INSTALLED_SCRIPT)) return self;
+  fs.mkdirSync(INSTALL_DIR, { recursive: true });
+  fs.copyFileSync(self, INSTALLED_SCRIPT);
+  fs.chmodSync(INSTALLED_SCRIPT, 0o755);
+  return INSTALLED_SCRIPT;
 }
 
 function launchctl(args) {
@@ -710,7 +721,7 @@ function launchctl(args) {
 
 /** Default command: run in the background with no terminal, starting at login. */
 function runDaemonStart() {
-  const self = fs.realpathSync(__filename);
+  const self = stableScriptPath();
   if (process.platform === 'darwin') {
     const uid = process.getuid();
     const plist = `<?xml version="1.0" encoding="UTF-8"?>

@@ -8,7 +8,7 @@ what Codex is actually doing right now, your active model, lifetime token
 count, and "Get Codex RPC" / "GitHub" buttons.
 
 ```sh
-curl -fsSL https://codex-rpc.ssh.codes/install.sh | bash
+npx -y codex-rpc
 ```
 
 That one line installs it and starts it **in the background** — no terminal
@@ -68,7 +68,7 @@ flattens uploaded art assets to static PNGs). Just run it.
    ```
 </details>
 
-Optionally `npm link` in this folder to get a global `codex-rpc` command.
+Run `npx -y codex-rpc` to install/update and start the background agent.
 
 ## Use
 
