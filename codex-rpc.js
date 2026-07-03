@@ -432,8 +432,9 @@ class Presence {
   }
   current(now = Date.now()) {
     const age = (now - this.lastActivityTs) / 1000;
-    if (this.lastState === 'success' && (now - this.successTs) / 1000 < this.cfg.successHoldSec) {
-      return 'success';
+    if (this.lastState === 'success') {
+      if ((now - this.successTs) / 1000 < this.cfg.successHoldSec) return 'success';
+      return 'sleeping';
     }
     if (age > this.cfg.sleepAfterSec) return 'sleeping';
     if (this.lastState === 'error' && (now - this.errorTs) / 1000 < 25) return 'error';
