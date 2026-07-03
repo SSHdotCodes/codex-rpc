@@ -8,6 +8,13 @@
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='80' font-size='80'>☁️</text></svg>">
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  @keyframes install-flash {
+    0%, 100% { box-shadow: 0 10px 30px rgba(38,42,77,.35); }
+    30% { box-shadow: 0 0 0 5px rgba(99,102,241,.65), 0 10px 30px rgba(38,42,77,.35); }
+    60% { box-shadow: 0 0 0 5px rgba(99,102,241,.25), 0 10px 30px rgba(38,42,77,.35); }
+  }
+  .install:target { animation: install-flash 1.6s ease 1; }
   :root {
     --bg: #eef0fb; --ink: #2b2e54; --muted: #6e72a0;
     --indigo: #6366f1; --card: #ffffff;
@@ -75,11 +82,14 @@
   .pmeta .t1 { font-weight: 700; font-size: 15px; color: #fff; }
   .pmeta div { font-size: 13.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .pbuttons { display: flex; flex-direction: column; gap: 8px; margin-top: 14px; }
-  .pbuttons span {
+  .pbuttons a {
     display: block; text-align: center; background: #4e5058; color: #fff;
     font-size: 13.5px; font-weight: 600; padding: 8px; border-radius: 8px;
+    text-decoration: none; transition: background .12s ease;
   }
-  .pbuttons span.primary { background: #5865f2; }
+  .pbuttons a:hover { background: #6d6f78; }
+  .pbuttons a.primary { background: #5865f2; }
+  .pbuttons a.primary:hover { background: #4752c4; }
 
   .states { margin-top: 72px; }
   h2 { font-size: 26px; margin-bottom: 8px; }
@@ -130,7 +140,7 @@
     <div>
       <h1>Your Discord, <span class="grad">Gaming on Codex</span>.</h1>
       <p class="sub">A tiny zero-dependency tool that mirrors what the Codex CLI is <em>really</em> doing as animated Discord Rich Presence — thinking while it reasons, typing while it codes, sleeping when it's idle — with your lifetime token count and active model.</p>
-      <div class="install">
+      <div class="install" id="install">
         <code id="cmd">curl -fsSL https://codex-rpc.ssh.codes/install.sh | bash</code>
         <button onclick="navigator.clipboard.writeText(document.getElementById('cmd').textContent).then(()=>{this.textContent='copied!';setTimeout(()=>this.textContent='copy',1500)})">copy</button>
       </div>
@@ -152,8 +162,8 @@
         </div>
       </div>
       <div class="pbuttons">
-        <span class="primary">Get Codex RPC</span>
-        <span>GitHub</span>
+        <a class="primary" href="#install">Get Codex RPC</a>
+        <a href="https://github.com/SSHdotCodes/codex-rpc">GitHub</a>
       </div>
     </div>
   </div>
