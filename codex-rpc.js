@@ -64,8 +64,13 @@ const DEFAULTS = {
   assets: {},             // per-state override: asset key or https URL
   smallImage: 'codex',    // set to '' to disable
   showTokens: true,       // append lifetime Codex token usage to the state line
+  showModel: true,        // append the active model to the details line
   clearWhenQuit: false,   // true = hide presence when Codex isn't running
                           // (default shows 😴 Sleeping instead)
+  buttons: [              // up to 2 presence buttons (label ≤ 32 chars)
+    { label: 'Get Codex RPC', url: 'https://codex-rpc.ssh.codes' },
+    { label: 'GitHub', url: 'https://github.com/SSHdotCodes/codex-rpc' },
+  ],
   // Where the animated GIFs are hosted. Discord flattens *uploaded* art
   // assets to static PNGs; presence only animates via external image URLs
   // (same trick claude-rpc uses). Set to '' to fall back to uploaded assets.
@@ -338,7 +343,10 @@ class Tailer {
       this.meta.cwd = j.payload.cwd;
       this.meta.startedAt = Date.parse(j.payload.timestamp || j.timestamp) || Date.now();
     }
-    if (j.type === 'turn_context' && j.payload && j.payload.cwd) this.meta.cwd = j.payload.cwd;
+    if (j.type === 'turn_context' && j.payload) {
+      if (j.payload.cwd) this.meta.cwd = j.payload.cwd;
+      if (j.payload.model) this.meta.model = j.payload.model;
+    }
     if (j.type === 'event_msg' && j.payload && j.payload.type === 'token_count') {
       const tot = j.payload.info?.total_token_usage?.total_tokens;
       if (typeof tot === 'number') this.meta.sessionTokens = tot;
@@ -567,19 +575,23 @@ function activityFor(cfg, state, meta, startedAt, totalTokens) {
     (cfg.assetBase ? `${cfg.assetBase}/${img}.gif?v=${cfg.assetVersion}` : img);
   let stateText = s.text;
   if (cfg.showTokens && totalTokens > 0) stateText += ` · ${fmtTokens(totalTokens)} tokens`;
+  let details = cfg.details;
+  if (cfg.showModel && meta && meta.model) details += ` · ${meta.model}`;
   let hover = project ? `${s.blurb} • ${project}` : s.blurb;
   if (meta && typeof meta.limitPct === 'number') {
     hover += ` • ${Math.round(meta.limitPct)}% of 5h limit used`;
   }
   const act = {
     type: 0,
-    details: cfg.details,
+    details,
     state: stateText,
     assets: {
       large_image: large,
       large_text: hover,
     },
   };
+  const btns = (cfg.buttons || []).filter(b => b && b.label && b.url).slice(0, 2);
+  if (btns.length) act.buttons = btns;
   if (cfg.smallImage) {
     act.assets.small_image = /^https?:/.test(cfg.smallImage) || !cfg.assetBase
       ? cfg.smallImage
@@ -672,11 +684,84 @@ function runStart(cfg, dry) {
   tick();
   setInterval(tick, cfg.updateEverySec * 1000);
 
-  process.on('SIGINT', () => {
+  const bye = () => {
     if (rpc) rpc.clearActivity();
     setTimeout(() => process.exit(0), 300);
-  });
+  };
+  process.on('SIGINT', bye);
+  process.on('SIGTERM', bye);   // launchd stops us with SIGTERM
   log(`watching ${sessionsRoot}${dry ? '  (dry run, no Discord)' : ''}`);
+}
+
+// ---------------------------------------------------------------- daemon
+const AGENT_LABEL = 'codes.ssh.codex-rpc';
+const LOG_PATH = path.join(os.homedir(), '.codex-rpc.log');
+
+function agentPlistPath() {
+  return path.join(os.homedir(), 'Library', 'LaunchAgents', `${AGENT_LABEL}.plist`);
+}
+
+function launchctl(args) {
+  try {
+    require('child_process').execFileSync('launchctl', args, { stdio: 'pipe' });
+    return true;
+  } catch { return false; }
+}
+
+/** Default command: run in the background with no terminal, starting at login. */
+function runDaemonStart() {
+  const self = fs.realpathSync(__filename);
+  if (process.platform === 'darwin') {
+    const uid = process.getuid();
+    const plist = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>${AGENT_LABEL}</string>
+  <key>ProgramArguments</key>
+  <array><string>${process.execPath}</string><string>${self}</string><string>run</string></array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>${LOG_PATH}</string>
+  <key>StandardErrorPath</key><string>${LOG_PATH}</string>
+</dict></plist>
+`;
+    fs.mkdirSync(path.dirname(agentPlistPath()), { recursive: true });
+    fs.writeFileSync(agentPlistPath(), plist);
+    launchctl(['bootout', `gui/${uid}/${AGENT_LABEL}`]);   // restart if already loaded
+    if (!launchctl(['bootstrap', `gui/${uid}`, agentPlistPath()])) {
+      console.error('failed to start the launchd agent — try: codex-rpc run   (foreground)');
+      process.exit(1);
+    }
+    console.log('✅ codex-rpc is running in the background (and will start at login).');
+  } else {
+    // Non-macOS fallback: detached background process (no auto-start at boot).
+    const out = fs.openSync(LOG_PATH, 'a');
+    const child = require('child_process').spawn(process.execPath, [self, 'run'],
+      { detached: true, stdio: ['ignore', out, out] });
+    child.unref();
+    console.log(`✅ codex-rpc is running in the background (pid ${child.pid}).`);
+  }
+  console.log(`   logs:  codex-rpc logs   (${LOG_PATH})`);
+  console.log('   stop:  codex-rpc stop      remove: codex-rpc uninstall');
+}
+
+function runDaemonStop(remove) {
+  if (process.platform === 'darwin') {
+    const ok = launchctl(['bootout', `gui/${process.getuid()}/${AGENT_LABEL}`]);
+    console.log(ok ? 'stopped.' : 'was not running.');
+    if (remove) {
+      try { fs.unlinkSync(agentPlistPath()); console.log('launch agent removed.'); } catch { /* absent */ }
+    }
+  } else {
+    console.log('on this platform, find the pid in the log and kill it manually.');
+  }
+}
+
+function runLogs() {
+  try {
+    const text = fs.readFileSync(LOG_PATH, 'utf8').trimEnd().split('\n');
+    console.log(text.slice(-30).join('\n'));
+  } catch { console.log(`no logs yet at ${LOG_PATH}`); }
 }
 
 function runDemo(cfg, argv) {
@@ -697,7 +782,8 @@ function runDemo(cfg, argv) {
     i++;
     log(`demo → ${state}  ${STATES[state].text}`);
     if (rpc) {
-      rpc.setActivity(activityFor(cfg, state, { cwd: 'demo-project', limitPct: 25 },
+      rpc.setActivity(activityFor(cfg, state,
+        { cwd: 'demo-project', limitPct: 25, model: 'gpt-5.5' },
         started, 1234567 + i * 98765));
     }
   };
@@ -783,7 +869,11 @@ const cmd = argv[0] && !argv[0].startsWith('-') ? argv.shift() : 'start';
 const cfg = loadConfig(argv);
 
 switch (cmd) {
-  case 'start': runStart(cfg, argv.includes('--dry')); break;
+  case 'start': runDaemonStart(); break;              // background, no terminal
+  case 'run': runStart(cfg, argv.includes('--dry')); break;   // foreground
+  case 'stop': runDaemonStop(false); break;
+  case 'uninstall': runDaemonStop(true); break;
+  case 'logs': runLogs(); break;
   case 'demo': runDemo(cfg, argv); break;
   case 'set': runSet(cfg, argv); break;
   case 'status': runStatus(cfg, argv); break;
@@ -791,6 +881,8 @@ switch (cmd) {
   case 'setup': runSetup(cfg, argv); break;
   case 'clear': runClear(cfg); break;
   default:
-    console.log('usage: codex-rpc [start|demo|set <state>|status|doctor|setup|clear]');
+    console.log('usage: codex-rpc [start|run|stop|uninstall|logs|demo|set <state>|status|doctor|setup|clear]');
+    console.log('  codex-rpc            start in the background (auto-starts at login)');
+    console.log('  codex-rpc run --dry  foreground, log states without Discord');
     process.exit(1);
 }

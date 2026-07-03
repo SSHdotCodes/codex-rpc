@@ -1,13 +1,22 @@
 # codex-rpc
 
-Discord Rich Presence for the **OpenAI Codex CLI / Desktop** — like
+**[codex-rpc.ssh.codes](https://codex-rpc.ssh.codes)** · Discord Rich Presence
+for the **OpenAI Codex CLI / Desktop** — like
 [claude-rpc](https://claude-rpc.com) but for Codex. Your Discord profile shows
 **"Gaming on Codex"** with a cute animated Codex mascot that changes based on
-what Codex is actually doing right now.
+what Codex is actually doing right now, your active model, lifetime token
+count, and "Get Codex RPC" / "GitHub" buttons.
+
+```sh
+curl -fsSL https://codex-rpc.ssh.codes/install.sh | bash
+```
+
+That one line installs it and starts it **in the background** — no terminal
+window, starts at login, restarts if it crashes. Re-run it any time to update.
 
 Zero dependencies, single file, Node ≥ 18. It tails Codex's session logs
 (`~/.codex/sessions/**/rollout-*.jsonl`) — no hooks, no wrappers, works with
-both the CLI and the desktop app.
+both the CLI and the desktop app, and nothing ever leaves your machine.
 
 ## States
 
@@ -64,13 +73,21 @@ Optionally `npm link` in this folder to get a global `codex-rpc` command.
 ## Use
 
 ```sh
-codex-rpc doctor      # sanity-check: node, sessions dir, Discord socket, config
-codex-rpc demo        # cycle all 10 states every 12s — check your profile!
-codex-rpc             # go live: mirrors whatever Codex is doing
+codex-rpc             # start in the background (auto-starts at login)
+codex-rpc stop        # stop it            codex-rpc uninstall  # remove agent
+codex-rpc logs        # tail the daemon log
+codex-rpc run         # run in the foreground instead (--dry: no Discord)
+codex-rpc demo        # cycle all states every 12s — check your profile!
 codex-rpc set success # hold one state manually
 codex-rpc status      # print the detected state (add --follow to stream)
+codex-rpc doctor      # sanity-check: node, sessions dir, Discord socket, config
 codex-rpc clear       # wipe the presence
 ```
+
+The details line shows the **active model** (from the live session), and the
+presence carries two **buttons** — "Get Codex RPC" and "GitHub" (Discord
+never shows you your own buttons; ask a friend or use a second account).
+Both are configurable (`showModel`, `buttons` in `~/.codex-rpc.json`).
 
 The Discord **desktop app** must be running on the same machine (presence goes
 over Discord's local IPC socket). If Discord restarts, codex-rpc reconnects on

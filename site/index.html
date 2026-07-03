@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Codex RPC — Discord Rich Presence for the Codex CLI</title>
+<meta name="description" content="Show 'Gaming on Codex' on Discord with cute animated states that mirror what Codex is really doing — thinking, typing, sleeping — plus live token counts.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='80' font-size='80'>☁️</text></svg>">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  :root {
+    --bg: #eef0fb; --ink: #2b2e54; --muted: #6e72a0;
+    --indigo: #6366f1; --card: #ffffff;
+  }
+  body {
+    background: var(--bg); color: var(--ink);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    min-height: 100vh;
+  }
+  .wrap { max-width: 1040px; margin: 0 auto; padding: 48px 24px 80px; }
+  header { display: flex; align-items: center; gap: 14px; margin-bottom: 56px; }
+  header img { width: 44px; height: 44px; }
+  header .name { font-weight: 800; font-size: 20px; }
+  header .gh { margin-left: auto; }
+  a.btn {
+    display: inline-flex; align-items: center; gap: 8px;
+    background: var(--indigo); color: #fff; text-decoration: none;
+    padding: 10px 18px; border-radius: 12px; font-weight: 600; font-size: 15px;
+    transition: transform .12s ease, box-shadow .12s ease;
+    box-shadow: 0 6px 18px rgba(99, 102, 241, .35);
+  }
+  a.btn:hover { transform: translateY(-2px); box-shadow: 0 10px 24px rgba(99,102,241,.45); }
+  a.btn.ghost { background: #fff; color: var(--ink); box-shadow: 0 4px 14px rgba(60,63,120,.14); }
+
+  .hero { display: grid; grid-template-columns: 1.15fr 1fr; gap: 48px; align-items: center; }
+  h1 { font-size: 44px; line-height: 1.12; letter-spacing: -0.5px; margin-bottom: 18px; }
+  h1 .grad {
+    background: linear-gradient(120deg, #8a86f5, #5a5fe8);
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+  .sub { color: var(--muted); font-size: 18px; line-height: 1.55; margin-bottom: 28px; }
+
+  .install {
+    background: #262a4d; color: #d8dcf7; border-radius: 14px;
+    padding: 16px 18px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 14.5px; display: flex; align-items: center; gap: 14px;
+    box-shadow: 0 10px 30px rgba(38,42,77,.35); margin-bottom: 14px;
+  }
+  .install code { flex: 1; overflow-x: auto; white-space: nowrap; scrollbar-width: none; }
+  .install code::before { content: "$ "; color: #7dd3fc; }
+  .install button {
+    background: var(--indigo); border: 0; color: #fff; font-weight: 700;
+    padding: 8px 14px; border-radius: 9px; cursor: pointer; font-size: 13px;
+  }
+  .install button:active { transform: scale(.96); }
+  .tiny { color: var(--muted); font-size: 13.5px; }
+  .tiny a { color: var(--indigo); }
+
+  /* Discord-style presence card */
+  .discord {
+    background: #111214; border-radius: 18px; padding: 18px;
+    color: #dbdee1; box-shadow: 0 24px 60px rgba(38,42,77,.35);
+  }
+  .discord .heading { font-size: 12px; font-weight: 700; color: #b5bac1; text-transform: uppercase; letter-spacing: .02em; margin-bottom: 12px; }
+  .prow { display: flex; gap: 14px; }
+  .art { position: relative; width: 96px; height: 96px; flex: none; }
+  .art img.large { width: 96px; height: 96px; border-radius: 12px; display: block; }
+  .art img.small {
+    width: 34px; height: 34px; border-radius: 50%; position: absolute;
+    right: -6px; bottom: -6px; border: 4px solid #111214; background: #eef0fb;
+  }
+  .pmeta { min-width: 0; display: flex; flex-direction: column; justify-content: center; gap: 2px; }
+  .pmeta .t1 { font-weight: 700; font-size: 15px; color: #fff; }
+  .pmeta div { font-size: 13.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .pbuttons { display: flex; flex-direction: column; gap: 8px; margin-top: 14px; }
+  .pbuttons span {
+    display: block; text-align: center; background: #4e5058; color: #fff;
+    font-size: 13.5px; font-weight: 600; padding: 8px; border-radius: 8px;
+  }
+  .pbuttons span.primary { background: #5865f2; }
+
+  .states { margin-top: 72px; }
+  h2 { font-size: 26px; margin-bottom: 8px; }
+  .states > p, .how > p { color: var(--muted); margin-bottom: 26px; }
+  .grid3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 22px; }
+  .scard { background: var(--card); border-radius: 20px; overflow: hidden; box-shadow: 0 10px 28px rgba(60,63,120,.12); }
+  .scard img { width: 100%; display: block; aspect-ratio: 1; }
+  .scard .cap { padding: 14px 18px; }
+  .scard .cap b { display: block; font-size: 16px; }
+  .scard .cap span { color: var(--muted); font-size: 13.5px; }
+
+  .how { margin-top: 72px; }
+  .feat { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 18px; }
+  .feat div { background: var(--card); border-radius: 16px; padding: 18px; box-shadow: 0 8px 22px rgba(60,63,120,.10); }
+  .feat b { display: block; margin-bottom: 6px; }
+  .feat span { color: var(--muted); font-size: 14px; line-height: 1.5; }
+
+  footer { margin-top: 80px; text-align: center; color: var(--muted); font-size: 14px; }
+  footer a { color: var(--indigo); text-decoration: none; font-weight: 600; }
+
+  @media (max-width: 840px) {
+    .hero { grid-template-columns: 1fr; }
+    h1 { font-size: 34px; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <img src="codex.png" alt="Codex cloud logo">
+    <span class="name">Codex RPC</span>
+    <a class="btn ghost gh" href="https://github.com/SSHdotCodes/codex-rpc">
+      <svg width="18" height="18" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
+      GitHub
+    </a>
+  </header>
+
+  <div class="hero">
+    <div>
+      <h1>Your Discord, <span class="grad">Gaming on Codex</span>.</h1>
+      <p class="sub">A tiny zero-dependency tool that mirrors what the Codex CLI is <em>really</em> doing as animated Discord Rich Presence — thinking while it reasons, typing while it codes, sleeping when it's idle — with your lifetime token count and active model.</p>
+      <div class="install">
+        <code id="cmd">curl -fsSL https://codex-rpc.ssh.codes/install.sh | bash</code>
+        <button onclick="navigator.clipboard.writeText(document.getElementById('cmd').textContent).then(()=>{this.textContent='copied!';setTimeout(()=>this.textContent='copy',1500)})">copy</button>
+      </div>
+      <p class="tiny">One line. Installs, starts in the background, auto-starts at login. Needs macOS, <a href="https://nodejs.org">Node 18+</a>, and the Discord app. <a href="https://github.com/SSHdotCodes/codex-rpc#readme">Docs&nbsp;→</a></p>
+    </div>
+
+    <div class="discord">
+      <div class="heading">Playing a game</div>
+      <div class="prow">
+        <div class="art">
+          <img class="large" src="thinking.gif" alt="Codex thinking animation">
+          <img class="small" src="codex.png" alt="Codex icon">
+        </div>
+        <div class="pmeta">
+          <div class="t1">Codex</div>
+          <div>Gaming on Codex · gpt-5.5</div>
+          <div id="stateline">🧠 Thinking… · 3.8B tokens</div>
+          <div id="elapsed">00:42 elapsed</div>
+        </div>
+      </div>
+      <div class="pbuttons">
+        <span class="primary">Get Codex RPC</span>
+        <span>GitHub</span>
+      </div>
+    </div>
+  </div>
+
+  <section class="states">
+    <h2>Three moods, tracked live</h2>
+    <p>codex-rpc tails Codex's session logs locally — nothing leaves your machine — and knows a running command from a thinking model.</p>
+    <div class="grid3">
+      <div class="scard"><img src="thinking.gif" alt="thinking" loading="lazy">
+        <div class="cap"><b>🧠 Thinking</b><span>reasoning, planning, digesting command output</span></div></div>
+      <div class="scard"><img src="coding.gif" alt="typing" loading="lazy">
+        <div class="cap"><b>⌨️ Working</b><span>editing files, searching, running builds &amp; tests</span></div></div>
+      <div class="scard"><img src="sleeping.gif" alt="sleeping" loading="lazy">
+        <div class="cap"><b>😴 Sleeping</b><span>idle, task complete, or Codex not running</span></div></div>
+    </div>
+  </section>
+
+  <section class="how">
+    <h2>Why it's neat</h2>
+    <p></p>
+    <div class="feat">
+      <div><b>Truly live states</b><span>Understands Codex's event log: a 10-minute build shows ⚙️ the whole time; quiet after results means 🧠.</span></div>
+      <div><b>Lifetime token counter</b><span>Sums every session you've ever run and ticks up live, right on your profile.</span></div>
+      <div><b>Zero dependencies</b><span>One Node file. No npm installs, no Electron, no telemetry. Talks straight to Discord's local socket.</span></div>
+      <div><b>Runs itself</b><span>Installs as a background agent — starts at login, restarts if it crashes, no terminal window.</span></div>
+      <div><b>Seamless loops</b><span>The animations loop invisibly, however long Codex grinds.</span></div>
+      <div><b>Yours to remap</b><span>Every state, image, and label is configurable in <code>~/.codex-rpc.json</code>.</span></div>
+    </div>
+  </section>
+
+  <footer>
+    <a href="https://github.com/SSHdotCodes/codex-rpc">GitHub</a> · part of <a href="https://ssh.codes">ssh.codes</a>
+  </footer>
+</div>
+<script>
+  // little touches: ticking elapsed + cycling state line
+  const states = ['🧠 Thinking… · 3.8B tokens', '⌨️ Writing code · 3.8B tokens',
+                  '🔍 Searching · 3.8B tokens', '⚙️ Working… · 3.8B tokens',
+                  '✅ Task complete! · 3.8B tokens'];
+  let si = 0, secs = 42;
+  setInterval(() => {
+    secs++;
+    const m = String(Math.floor(secs / 60)).padStart(2, '0');
+    const s = String(secs % 60).padStart(2, '0');
+    document.getElementById('elapsed').textContent = `${m}:${s} elapsed`;
+  }, 1000);
+  setInterval(() => {
+    si = (si + 1) % states.length;
+    document.getElementById('stateline').textContent = states[si];
+  }, 6000);
+</script>
+</body>
+</html>
