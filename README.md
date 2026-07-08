@@ -3,7 +3,7 @@
 **[codex-rpc.ssh.codes](https://codex-rpc.ssh.codes)** · Discord Rich Presence
 for the **OpenAI Codex CLI / Desktop** — like
 [claude-rpc](https://claude-rpc.com) but for Codex. Your Discord profile shows
-**"Gaming on Codex"** with a cute animated Codex mascot that changes based on
+**"Playing Codex"** with a cute animated Codex mascot that changes based on
 what Codex is actually doing right now, your active model, lifetime token
 count, and "Get Codex RPC" / "GitHub" buttons.
 
@@ -44,11 +44,12 @@ instead of showing 😴, and `showTokens: false` to hide the token counter.
 
 ## Setup
 
-**None, out of the box.** A shared "Gaming on Codex" Discord application id is
-baked in (app ids are public identifiers, not secrets — same model as
-claude-rpc), and the animations are served from this repo's raw GitHub URLs —
-Discord only animates presence images that come from external URLs (it
-flattens uploaded art assets to static PNGs). Just run it.
+**None, out of the box.** A shared "Codex" Discord application id is baked in
+(app ids are public identifiers, not secrets — same model as claude-rpc), and
+the animations are served from this repo's raw GitHub URLs — Discord only
+animates presence images that come from external URLs (it flattens uploaded
+art assets to static PNGs). Just run it. The **"Playing X" headline is the
+Discord application's name** — so it reads "Playing Codex".
 
 <details>
 <summary>Using your own Discord application instead</summary>
@@ -95,14 +96,16 @@ its own.
 
 ### Options / config
 
-Flags: `--client-id`, `--details "Gaming on Codex"`, `--codex-home`,
+Flags: `--client-id`, `--details "<second line>"`, `--codex-home`,
 `--sleep-after <sec>`, `--dry` (no Discord, log states only).
+The card's second line is `details · project · model` (details empty by
+default). The "Playing X" headline is the Discord app name, not `details`.
 Persistent config lives in `~/.codex-rpc.json`:
 
 ```json
 {
   "clientId": "123456789012345678",
-  "details": "Gaming on Codex",
+  "details": "",
   "sleepAfterSec": 300,
   "successHoldSec": 180,
   "smallImage": "codex",

@@ -3,7 +3,7 @@
  * codex-rpc — Discord Rich Presence for the OpenAI Codex CLI / Desktop.
  *
  * Tails ~/.codex/sessions rollout logs, classifies what Codex is doing,
- * and shows "Gaming on Codex" + a cute animation per state, claude-rpc style.
+ * and shows "Playing Codex" + a cute animation per state, claude-rpc style.
  *
  * Zero dependencies. Node >= 18.
  *
@@ -49,14 +49,17 @@ const STATE_IMAGE = {
   sleeping: 'sleeping', success: 'sleeping',
 };
 
-// Default shared "Gaming on Codex" Discord application (public identifier,
-// not a secret — same model as claude-rpc). Override with --client-id,
-// CODEX_RPC_CLIENT_ID, or ~/.codex-rpc.json.
+// Default shared "Codex" Discord application (public identifier, not a
+// secret — same model as claude-rpc). Its app NAME is what shows as
+// "Playing X". Override with --client-id, CODEX_RPC_CLIENT_ID, or config.
 const DEFAULT_APP_ID = '1522026697908813864';
 
 const DEFAULTS = {
   clientId: process.env.CODEX_RPC_CLIENT_ID || DEFAULT_APP_ID,
-  details: 'Gaming on Codex',
+  // The "Playing X" line is the Discord *application* name, not this — this is
+  // the card's second line. Leave empty so it shows the project + model; the
+  // status headline reads "Playing Codex" once the app is named "Codex".
+  details: '',
   codexHome: process.env.CODEX_HOME || path.join(os.homedir(), '.codex'),
   sleepAfterSec: 300,     // no activity -> sleeping
   successHoldSec: 180,    // how long "task complete" lingers
@@ -576,21 +579,26 @@ function activityFor(cfg, state, meta, startedAt, totalTokens) {
     (cfg.assetBase ? `${cfg.assetBase}/${img}.gif?v=${cfg.assetVersion}` : img);
   let stateText = s.text;
   if (cfg.showTokens && totalTokens > 0) stateText += ` · ${fmtTokens(totalTokens)} tokens`;
-  let details = cfg.details;
-  if (cfg.showModel && meta && meta.model) details += ` · ${meta.model}`;
+  // details = second line on the card: "<cfg.details> · <project> · <model>",
+  // any part optional. The "Playing Codex" headline is the app name, separate.
+  const parts = [];
+  if (cfg.details) parts.push(cfg.details);
+  if (project) parts.push(project);
+  if (cfg.showModel && meta && meta.model) parts.push(meta.model);
+  const details = parts.join(' · ');
   let hover = project ? `${s.blurb} • ${project}` : s.blurb;
   if (meta && typeof meta.limitPct === 'number') {
     hover += ` • ${Math.round(meta.limitPct)}% of 5h limit used`;
   }
   const act = {
     type: 0,
-    details,
     state: stateText,
     assets: {
       large_image: large,
       large_text: hover,
     },
   };
+  if (details) act.details = details;
   const btns = (cfg.buttons || []).filter(b => b && b.label && b.url).slice(0, 2);
   if (btns.length) act.buttons = btns;
   if (cfg.smallImage) {
