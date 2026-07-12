@@ -8,11 +8,20 @@ what Codex is actually doing right now, your active model, lifetime token
 count, and "Get Codex RPC" / "GitHub" buttons.
 
 ```sh
-npx -y codex-rpc
+npx -y github:SSHdotCodes/codex-rpc
 ```
 
 That one line installs it and starts it **in the background** — no terminal
-window, starts at login, restarts if it crashes. Re-run it any time to update.
+window, starts at login on macOS and Windows, and restarts if it crashes.
+Re-run it any time to update. On Windows, it also installs a persistent
+`codex-rpc` command in npm's normal global command directory, so commands such
+as `codex-rpc --help` work in a new PowerShell window after the first run.
+
+If you ran version 1.0.1 on Windows, update once with:
+
+```powershell
+npx -y github:SSHdotCodes/codex-rpc
+```
 
 Zero dependencies, single file, Node ≥ 18. It tails Codex's session logs
 (`~/.codex/sessions/**/rollout-*.jsonl`) — no hooks, no wrappers, works with
@@ -69,7 +78,8 @@ Discord application's name** — so it reads "Playing Codex".
    ```
 </details>
 
-Run `npx -y codex-rpc` to install/update and start the background agent.
+Run `npx -y github:SSHdotCodes/codex-rpc` to install/update and start the
+background agent.
 
 ## Use
 

@@ -631,6 +631,10 @@ function runStart(cfg, dry) {
     console.error('(create an app at https://discord.com/developers/applications — see README)');
     process.exit(1);
   }
+  if (!dry) {
+    fs.writeFileSync(PID_PATH, `${process.pid}\n`);
+    process.on('exit', () => removeTrackedPid(process.pid));
+  }
   const sessionsRoot = path.join(cfg.codexHome, 'sessions');
   const presence = new Presence(cfg);
   const watcher = new SessionWatcher(cfg, (res, m) => presence.onEvent(res, m));
@@ -695,6 +699,7 @@ function runStart(cfg, dry) {
 
   const bye = () => {
     if (rpc) rpc.clearActivity();
+    if (!dry) removeTrackedPid(process.pid);
     setTimeout(() => process.exit(0), 300);
   };
   process.on('SIGINT', bye);
@@ -705,6 +710,7 @@ function runStart(cfg, dry) {
 // ---------------------------------------------------------------- daemon
 const AGENT_LABEL = 'codes.ssh.codex-rpc';
 const LOG_PATH = path.join(os.homedir(), '.codex-rpc.log');
+const PID_PATH = path.join(os.homedir(), '.codex-rpc.pid');
 const INSTALL_DIR = path.join(os.homedir(), '.codex-rpc');
 const INSTALLED_SCRIPT = path.join(INSTALL_DIR, 'codex-rpc.js');
 
@@ -721,6 +727,69 @@ function stableScriptPath() {
   return INSTALLED_SCRIPT;
 }
 
+function windowsCommandPath() {
+  if (process.platform !== 'win32') return '';
+  const npm = path.join(path.dirname(process.execPath), 'npm.cmd');
+  const command = fs.existsSync(npm) ? npm : 'npm.cmd';
+  try {
+    const prefix = require('child_process').execFileSync(command, ['prefix', '-g'], {
+      encoding: 'utf8', windowsHide: true,
+    }).trim();
+    return prefix ? path.join(prefix, 'codex-rpc.cmd') : '';
+  } catch {
+    return process.env.APPDATA ? path.join(process.env.APPDATA, 'npm', 'codex-rpc.cmd') : '';
+  }
+}
+
+// npx normally runs from a temporary cache. Keep a tiny command shim in npm's
+// normal Windows bin directory so later shells can run `codex-rpc` directly.
+function installWindowsCommand(self) {
+  const commandPath = windowsCommandPath();
+  if (!commandPath) return;
+  try {
+    fs.mkdirSync(path.dirname(commandPath), { recursive: true });
+    fs.writeFileSync(commandPath,
+      `@ECHO OFF\r\n"${process.execPath}" "${self}" %*\r\n`);
+    console.log(`   command: ${commandPath}`);
+  } catch (err) {
+    console.warn(`warning: could not install the persistent codex-rpc command: ${err.message}`);
+    console.warn('         run: npm install -g codex-rpc');
+  }
+}
+
+function windowsStartupPath() {
+  if (process.platform !== 'win32' || !process.env.APPDATA) return '';
+  return path.join(process.env.APPDATA, 'Microsoft', 'Windows', 'Start Menu',
+    'Programs', 'Startup', 'codex-rpc.vbs');
+}
+
+function installWindowsStartup(self) {
+  const startup = windowsStartupPath();
+  if (!startup) return;
+  try {
+    const command = `"${process.execPath}" "${self}" run`;
+    const vbsCommand = command.replace(/"/g, '""');
+    fs.mkdirSync(path.dirname(startup), { recursive: true });
+    fs.writeFileSync(startup,
+      `Set shell = CreateObject("WScript.Shell")\r\nshell.Run "${vbsCommand}", 0, False\r\n`);
+  } catch (err) {
+    console.warn(`warning: could not install the Windows login launcher: ${err.message}`);
+  }
+}
+
+function trackedPid() {
+  try {
+    const pid = Number(fs.readFileSync(PID_PATH, 'utf8').trim());
+    return Number.isInteger(pid) && pid > 0 ? pid : 0;
+  } catch { return 0; }
+}
+
+function removeTrackedPid(pid = 0) {
+  try {
+    if (!pid || trackedPid() === pid) fs.unlinkSync(PID_PATH);
+  } catch { /* absent or belongs to a newer process */ }
+}
+
 function launchctl(args) {
   try {
     require('child_process').execFileSync('launchctl', args, { stdio: 'pipe' });
@@ -731,6 +800,10 @@ function launchctl(args) {
 /** Default command: run in the background with no terminal, starting at login. */
 function runDaemonStart() {
   const self = stableScriptPath();
+  if (process.platform === 'win32') {
+    installWindowsCommand(self);
+    installWindowsStartup(self);
+  }
   if (process.platform === 'darwin') {
     const uid = process.getuid();
     const plist = `<?xml version="1.0" encoding="UTF-8"?>
@@ -760,10 +833,11 @@ function runDaemonStart() {
     }
     console.log('✅ codex-rpc is running in the background (and will start at login).');
   } else {
-    // Non-macOS fallback: detached background process (no auto-start at boot).
+    // Windows also gets a Startup-folder launcher; other platforms run until reboot.
     const out = fs.openSync(LOG_PATH, 'a');
     const child = require('child_process').spawn(process.execPath, [self, 'run'],
-      { detached: true, stdio: ['ignore', out, out] });
+      { detached: true, stdio: ['ignore', out, out], windowsHide: true });
+    fs.writeFileSync(PID_PATH, `${child.pid}\n`);
     child.unref();
     console.log(`✅ codex-rpc is running in the background (pid ${child.pid}).`);
   }
@@ -779,7 +853,21 @@ function runDaemonStop(remove) {
       try { fs.unlinkSync(agentPlistPath()); console.log('launch agent removed.'); } catch { /* absent */ }
     }
   } else {
-    console.log('on this platform, find the pid in the log and kill it manually.');
+    const pid = trackedPid();
+    let stopped = false;
+    if (pid) {
+      try { process.kill(pid); stopped = true; } catch { /* already gone */ }
+      removeTrackedPid(pid);
+    }
+    console.log(stopped ? 'stopped.' : 'was not running.');
+    if (remove && process.platform === 'win32') {
+      for (const file of [windowsStartupPath(), windowsCommandPath(), INSTALLED_SCRIPT]) {
+        if (!file) continue;
+        try { fs.unlinkSync(file); } catch { /* absent */ }
+      }
+      try { fs.rmdirSync(INSTALL_DIR); } catch { /* non-empty or absent */ }
+      console.log('startup agent and command removed.');
+    }
   }
 }
 
@@ -891,7 +979,8 @@ function runClear(cfg) {
 
 // ---------------------------------------------------------------- main
 const argv = process.argv.slice(2);
-const cmd = argv[0] && !argv[0].startsWith('-') ? argv.shift() : 'start';
+const helpRequested = argv[0] === '--help' || argv[0] === '-h';
+const cmd = helpRequested ? 'help' : (argv[0] && !argv[0].startsWith('-') ? argv.shift() : 'start');
 const cfg = loadConfig(argv);
 
 switch (cmd) {
@@ -906,6 +995,11 @@ switch (cmd) {
   case 'doctor': runDoctor(cfg); break;
   case 'setup': runSetup(cfg, argv); break;
   case 'clear': runClear(cfg); break;
+  case 'help':
+    console.log('usage: codex-rpc [start|run|stop|uninstall|logs|demo|set <state>|status|doctor|setup|clear]');
+    console.log('  codex-rpc            start in the background (auto-starts at login on macOS/Windows)');
+    console.log('  codex-rpc run --dry  foreground, log states without Discord');
+    break;
   default:
     console.log('usage: codex-rpc [start|run|stop|uninstall|logs|demo|set <state>|status|doctor|setup|clear]');
     console.log('  codex-rpc            start in the background (auto-starts at login)');
