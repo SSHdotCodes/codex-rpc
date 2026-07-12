@@ -12,8 +12,9 @@ npx -y github:SSHdotCodes/codex-rpc
 ```
 
 That one line installs it and starts it **in the background** — no terminal
-window, starts at login on macOS and Windows, and restarts if it crashes.
-Re-run it any time to update. On Windows, it also installs a persistent
+window and starts at login on macOS and Windows. The macOS launch agent also
+restarts it if it crashes. Re-run the command any time to update. On Windows,
+it also installs a persistent
 `codex-rpc` command in npm's normal global command directory, so commands such
 as `codex-rpc --help` work in a new PowerShell window after the first run.
 
