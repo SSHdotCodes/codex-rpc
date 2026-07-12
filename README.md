@@ -17,6 +17,8 @@ restarts it if it crashes. Re-run the command any time to update. On Windows,
 it also installs a persistent
 `codex-rpc` command in npm's normal global command directory, so commands such
 as `codex-rpc --help` work in a new PowerShell window after the first run.
+Starting the updated CLI also removes background copies left behind by older
+Windows releases, so only one daemon updates Discord at a time.
 
 If you ran version 1.0.1 on Windows, update once with:
 

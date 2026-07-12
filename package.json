@@ -1,6 +1,6 @@
 {
   "name": "codex-rpc",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Discord Rich Presence for the OpenAI Codex CLI — Gaming on Codex, with cute per-state animations",
   "homepage": "https://codex-rpc.ssh.codes",
   "repository": {

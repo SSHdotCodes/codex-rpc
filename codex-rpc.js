@@ -462,6 +462,9 @@ class DiscordRPC {
   }
 
   socketCandidates() {
+    if (process.platform === 'win32') {
+      return Array.from({ length: 10 }, (_, i) => `\\\\?\\pipe\\discord-ipc-${i}`);
+    }
     const dirs = [];
     if (process.env.XDG_RUNTIME_DIR) {
       dirs.push(process.env.XDG_RUNTIME_DIR);
@@ -477,6 +480,9 @@ class DiscordRPC {
 
   connect() {
     const candidates = this.socketCandidates().filter(p => {
+      // Windows named pipes are connectable paths, not filesystem entries;
+      // fs.statSync() rejects them even while Discord is listening.
+      if (process.platform === 'win32') return true;
       try { return fs.statSync(p).isSocket?.() ?? true; } catch { return false; }
     });
     if (!candidates.length) return this.retry('Discord IPC socket not found (is Discord running?)');
@@ -632,6 +638,14 @@ function runStart(cfg, dry) {
     process.exit(1);
   }
   if (!dry) {
+    const existing = trackedPid();
+    if (existing && existing !== process.pid) {
+      try {
+        process.kill(existing, 0);
+        log(`another codex-rpc daemon is already running (pid ${existing})`);
+        return;
+      } catch { removeTrackedPid(existing); }
+    }
     fs.writeFileSync(PID_PATH, `${process.pid}\n`);
     process.on('exit', () => removeTrackedPid(process.pid));
   }
@@ -790,6 +804,36 @@ function removeTrackedPid(pid = 0) {
   } catch { /* absent or belongs to a newer process */ }
 }
 
+function stopTrackedDaemon() {
+  const pid = trackedPid();
+  if (!pid || pid === process.pid) return false;
+  let stopped = false;
+  try { process.kill(pid); stopped = true; } catch { /* already gone */ }
+  removeTrackedPid(pid);
+  return stopped;
+}
+
+// Versions before 1.0.2 did not record their pid, so repeated npx runs could
+// leave several Windows daemons alive. Remove those legacy copies by their
+// stable script command line before launching the new single instance.
+function stopLegacyWindowsDaemons(self) {
+  if (process.platform !== 'win32') return 0;
+  const encoded = Buffer.from(self, 'utf16le').toString('base64');
+  const script = [
+    `$needle = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('${encoded}'));`,
+    `$current = ${process.pid};`,
+    `Get-CimInstance Win32_Process -Filter "Name = 'node.exe'" -ErrorAction SilentlyContinue`,
+    `| Where-Object { $_.ProcessId -ne $current -and $_.CommandLine -and $_.CommandLine.Contains($needle) -and $_.CommandLine -match '\\srun(?:\\s|$)' }`,
+    `| ForEach-Object { $_.ProcessId; Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`,
+  ].join(' ');
+  try {
+    const stdout = require('child_process').execFileSync('powershell.exe',
+      ['-NoProfile', '-NonInteractive', '-Command', script],
+      { encoding: 'utf8', windowsHide: true });
+    return stdout.trim() ? stdout.trim().split(/\s+/).length : 0;
+  } catch { return 0; }
+}
+
 function launchctl(args) {
   try {
     require('child_process').execFileSync('launchctl', args, { stdio: 'pipe' });
@@ -801,6 +845,9 @@ function launchctl(args) {
 function runDaemonStart() {
   const self = stableScriptPath();
   if (process.platform === 'win32') {
+    stopTrackedDaemon();
+    const stopped = stopLegacyWindowsDaemons(self);
+    if (stopped) console.log(`   stopped ${stopped} older background instance${stopped === 1 ? '' : 's'}`);
     installWindowsCommand(self);
     installWindowsStartup(self);
   }
@@ -853,12 +900,7 @@ function runDaemonStop(remove) {
       try { fs.unlinkSync(agentPlistPath()); console.log('launch agent removed.'); } catch { /* absent */ }
     }
   } else {
-    const pid = trackedPid();
-    let stopped = false;
-    if (pid) {
-      try { process.kill(pid); stopped = true; } catch { /* already gone */ }
-      removeTrackedPid(pid);
-    }
+    const stopped = stopTrackedDaemon();
     console.log(stopped ? 'stopped.' : 'was not running.');
     if (remove && process.platform === 'win32') {
       for (const file of [windowsStartupPath(), windowsCommandPath(), INSTALLED_SCRIPT]) {
@@ -948,8 +990,12 @@ function runDoctor(cfg) {
     ok(!!best, 'newest rollout log', best ? `${path.basename(best.path)} (${Math.round((Date.now() - best.mtimeMs) / 60000)}m old)` : 'none found');
   }
   const rpc = new DiscordRPC('0');
-  const socks = rpc.socketCandidates().filter(p => { try { fs.statSync(p); return true; } catch { return false; } });
-  ok(socks.length > 0, 'discord ipc socket', socks[0] || 'not found — is the Discord app running?');
+  if (process.platform === 'win32') {
+    console.log(` ℹ️ discord IPC named-pipe probe — ${rpc.socketCandidates()[0]} …`);
+  } else {
+    const socks = rpc.socketCandidates().filter(p => { try { fs.statSync(p); return true; } catch { return false; } });
+    ok(socks.length > 0, 'discord ipc socket', socks[0] || 'not found — is the Discord app running?');
+  }
   ok(!!cfg.clientId, 'client id configured', cfg.clientId ? cfg.clientId : `run: codex-rpc setup --client-id <id>`);
   console.log('\nasset keys expected on your Discord app (Rich Presence → Art Assets):');
   console.log('  ' + Object.keys(STATES).join(', ') + (cfg.smallImage ? `, ${cfg.smallImage}` : ''));
@@ -978,31 +1024,36 @@ function runClear(cfg) {
 }
 
 // ---------------------------------------------------------------- main
-const argv = process.argv.slice(2);
-const helpRequested = argv[0] === '--help' || argv[0] === '-h';
-const cmd = helpRequested ? 'help' : (argv[0] && !argv[0].startsWith('-') ? argv.shift() : 'start');
-const cfg = loadConfig(argv);
+function main() {
+  const argv = process.argv.slice(2);
+  const helpRequested = argv[0] === '--help' || argv[0] === '-h';
+  const cmd = helpRequested ? 'help' : (argv[0] && !argv[0].startsWith('-') ? argv.shift() : 'start');
+  const cfg = loadConfig(argv);
 
-switch (cmd) {
-  case 'start': runDaemonStart(); break;              // background, no terminal
-  case 'run': runStart(cfg, argv.includes('--dry')); break;   // foreground
-  case 'stop': runDaemonStop(false); break;
-  case 'uninstall': runDaemonStop(true); break;
-  case 'logs': runLogs(); break;
-  case 'demo': runDemo(cfg, argv); break;
-  case 'set': runSet(cfg, argv); break;
-  case 'status': runStatus(cfg, argv); break;
-  case 'doctor': runDoctor(cfg); break;
-  case 'setup': runSetup(cfg, argv); break;
-  case 'clear': runClear(cfg); break;
-  case 'help':
-    console.log('usage: codex-rpc [start|run|stop|uninstall|logs|demo|set <state>|status|doctor|setup|clear]');
-    console.log('  codex-rpc            start in the background (auto-starts at login on macOS/Windows)');
-    console.log('  codex-rpc run --dry  foreground, log states without Discord');
-    break;
-  default:
-    console.log('usage: codex-rpc [start|run|stop|uninstall|logs|demo|set <state>|status|doctor|setup|clear]');
-    console.log('  codex-rpc            start in the background (auto-starts at login)');
-    console.log('  codex-rpc run --dry  foreground, log states without Discord');
-    process.exit(1);
+  switch (cmd) {
+    case 'start': runDaemonStart(); break;              // background, no terminal
+    case 'run': runStart(cfg, argv.includes('--dry')); break;   // foreground
+    case 'stop': runDaemonStop(false); break;
+    case 'uninstall': runDaemonStop(true); break;
+    case 'logs': runLogs(); break;
+    case 'demo': runDemo(cfg, argv); break;
+    case 'set': runSet(cfg, argv); break;
+    case 'status': runStatus(cfg, argv); break;
+    case 'doctor': runDoctor(cfg); break;
+    case 'setup': runSetup(cfg, argv); break;
+    case 'clear': runClear(cfg); break;
+    case 'help':
+      console.log('usage: codex-rpc [start|run|stop|uninstall|logs|demo|set <state>|status|doctor|setup|clear]');
+      console.log('  codex-rpc            start in the background (auto-starts at login on macOS/Windows)');
+      console.log('  codex-rpc run --dry  foreground, log states without Discord');
+      break;
+    default:
+      console.log('usage: codex-rpc [start|run|stop|uninstall|logs|demo|set <state>|status|doctor|setup|clear]');
+      console.log('  codex-rpc            start in the background (auto-starts at login)');
+      console.log('  codex-rpc run --dry  foreground, log states without Discord');
+      process.exit(1);
+  }
 }
+
+if (require.main === module) main();
+module.exports = { DiscordRPC, _internals: { stopLegacyWindowsDaemons } };
